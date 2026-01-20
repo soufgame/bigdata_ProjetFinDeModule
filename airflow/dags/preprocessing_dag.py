@@ -26,70 +26,126 @@ sys.path.insert(0, PREPROCESSING_PATH)
 # ===================== TÂCHE 1: COLLECTE DES DONNÉES =====================
 def collect_data(**kwargs):
     """
-    Simule la collecte de nouvelles données.
+    Collecte les nouvelles données depuis une source externe (NewsAPI simulation).
+    En production, cela pourrait être une API réelle.
     """
     from datetime import datetime
+    import pandas as pd
     
     print("📡 Collecte des données en cours...")
     
-    # Simulation de données collectées
-    data = {
-        'source': 'newsapi',
-        'title': f'Article collecté le {datetime.now().strftime("%Y-%m-%d %H:%M")}',
-        'content': 'This is sample article content with URLs https://example.com and emojis 😊 The CATS are running!!!',
-        'published_at': datetime.now().isoformat()
-    }
-    
-    print(f"✅ Données collectées: {data['title']}")
-    return data
-
-
-# ===================== TÂCHE 2: STOCKAGE EN CSV =====================
-def store_to_csv(**kwargs):
-    """
-    Stocke les données dans un fichier CSV.
-    """
-    import pandas as pd
-    
-    ti = kwargs['ti']
-    new_data = ti.xcom_pull(task_ids='collect_data')
-    
-    print("💾 Stockage des données...")
-    
-    # Utiliser le fichier existant
+    # Charger les données depuis le fichier source (simulant une API)
     csv_path = '/opt/airflow/preprocessing/ai_vs_human_news.csv'
     
-    # Lire le fichier existant
     try:
         df = pd.read_csv(csv_path)
-        print(f"📊 Fichier existant chargé: {len(df)} lignes")
-    except:
-        df = pd.DataFrame()
-        print("📄 Création d'un nouveau fichier")
+        print(f"✅ {len(df)} articles collectés depuis la source")
+        
+        # Convertir en liste de dictionnaires pour XCom
+        articles = df.to_dict('records')
+        
+        # Ajouter un timestamp d'ingestion
+        for article in articles:
+            article['ingested_at'] = datetime.now().isoformat()
+        
+        print(f"✅ Données collectées avec timestamp d'ingestion")
+        return articles
+        
+    except Exception as e:
+        print(f"❌ Erreur lors de la collecte: {e}")
+        return []
+
+
+# ===================== TÂCHE 2: STOCKAGE DANS MONGODB =====================
+def store_to_mongodb(**kwargs):
+    """
+    Stocke les données collectées dans MongoDB (collection raw_articles).
+    """
+    from pymongo import MongoClient
+    from datetime import datetime
     
-    print(f"✅ Données prêtes pour le prétraitement")
-    return csv_path
+    ti = kwargs['ti']
+    articles = ti.xcom_pull(task_ids='collect_data')
+    
+    if not articles:
+        print("⚠️ Aucun article à stocker")
+        return 0
+    
+    # Configuration MongoDB
+    MONGO_HOST = os.environ.get("MONGO_HOST", "mongodb")
+    MONGO_PORT = int(os.environ.get("MONGO_PORT", 27017))
+    MONGO_DB = "news_db"
+    
+    print(f"💾 Stockage de {len(articles)} articles dans MongoDB...")
+    print(f"📡 Connexion à MongoDB ({MONGO_HOST}:{MONGO_PORT})...")
+    
+    try:
+        client = MongoClient(MONGO_HOST, MONGO_PORT)
+        db = client[MONGO_DB]
+        collection = db["raw_articles"]
+        
+        # Insérer les nouveaux articles
+        # Option: remplacer tous les documents ou ajouter (ici on remplace pour éviter les doublons)
+        collection.delete_many({})
+        result = collection.insert_many(articles)
+        
+        print(f"✅ {len(result.inserted_ids)} articles stockés dans MongoDB (raw_articles)")
+        client.close()
+        
+        return len(result.inserted_ids)
+        
+    except Exception as e:
+        print(f"❌ Erreur MongoDB: {e}")
+        return 0
 
 
 # ===================== TÂCHE 3: PRÉTRAITEMENT =====================
 def run_preprocessing(**kwargs):
     """
-    Exécute le pipeline de nettoyage.
+    Exécute le pipeline de nettoyage avec MongoDB.
     """
     import pandas as pd
+    from pymongo import MongoClient
+    
     sys.path.insert(0, '/opt/airflow/preprocessing')
     
     from cleaner import clean_text
     from normalizer import normalize_text
     from nlp_processor import process_nlp
     
-    ti = kwargs['ti']
-    input_file = ti.xcom_pull(task_ids='store_to_csv')
+    # Configuration MongoDB
+    MONGO_HOST = os.environ.get("MONGO_HOST", "mongodb")
+    MONGO_PORT = int(os.environ.get("MONGO_PORT", 27017))
+    MONGO_DB = "news_db"
+    
     output_file = '/opt/airflow/preprocessing/processed_news.csv'
     
     print("🧹 Prétraitement en cours...")
+    print(f"📡 Connexion à MongoDB ({MONGO_HOST}:{MONGO_PORT})...")
     
-    df = pd.read_csv(input_file)
+    # Charger depuis MongoDB
+    try:
+        client = MongoClient(MONGO_HOST, MONGO_PORT)
+        db = client[MONGO_DB]
+        raw_collection = db["raw_articles"]
+        
+        data = list(raw_collection.find())
+        print(f"✅ {len(data)} documents chargés depuis MongoDB")
+        
+        if data:
+            df = pd.DataFrame(data)
+            if '_id' in df.columns:
+                df = df.drop('_id', axis=1)
+        else:
+            # Fallback vers CSV si MongoDB est vide
+            print("⚠️ MongoDB vide, chargement depuis CSV...")
+            csv_path = '/opt/airflow/preprocessing/ai_vs_human_news.csv'
+            df = pd.read_csv(csv_path)
+    except Exception as e:
+        print(f"⚠️ Erreur MongoDB: {e}, chargement depuis CSV...")
+        csv_path = '/opt/airflow/preprocessing/ai_vs_human_news.csv'
+        df = pd.read_csv(csv_path)
+        client = None
     
     # Trouver la colonne de texte
     text_col = None
@@ -112,7 +168,25 @@ def run_preprocessing(**kwargs):
         return tokens
     
     df['processed_tokens'] = df[text_col].apply(preprocess)
+    
+    # Sauvegarder en CSV
     df.to_csv(output_file, index=False)
+    
+    # Sauvegarder dans MongoDB
+    try:
+        if client is None:
+            client = MongoClient(MONGO_HOST, MONGO_PORT)
+            db = client[MONGO_DB]
+        
+        processed_collection = db["processed_articles"]
+        records = df.to_dict('records')
+        processed_collection.delete_many({})
+        if records:
+            processed_collection.insert_many(records)
+        print(f"✅ {len(records)} documents sauvegardés dans MongoDB (processed_articles)")
+        client.close()
+    except Exception as e:
+        print(f"⚠️ Erreur lors de la sauvegarde MongoDB: {e}")
     
     print(f"✅ Prétraitement terminé! {len(df)} lignes traitées")
     print(f"📁 Fichier sauvegardé: {output_file}")
@@ -144,10 +218,10 @@ with DAG(
         python_callable=collect_data,
     )
     
-    # Tâche 2: Stockage
+    # Tâche 2: Stockage MongoDB
     t2_store = PythonOperator(
-        task_id='store_to_csv',
-        python_callable=store_to_csv,
+        task_id='store_to_mongodb',
+        python_callable=store_to_mongodb,
     )
     
     # Tâche 3: Prétraitement

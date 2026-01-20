@@ -8,7 +8,9 @@ services:
       - AIRFLOW__CORE__LOAD_EXAMPLES=false
       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=false
       - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=true
-      - _PIP_ADDITIONAL_REQUIREMENTS=pandas nltk
+      - _PIP_ADDITIONAL_REQUIREMENTS=pandas nltk pymongo
+      - MONGO_HOST=kafkaproject-mongodb-1
+      - MONGO_PORT=27017
     ports:
       - "8080:8080"
     volumes:
@@ -21,3 +23,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    networks:
+      - kafkaproject_default
+
+networks:
+  kafkaproject_default:
+    external: true

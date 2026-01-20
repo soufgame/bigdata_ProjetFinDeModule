@@ -24,13 +24,25 @@ The goal of this module is to transform raw text data (collected by Member 1) in
 ## Pipeline
 
 The main script `pipeline.py` orchestrates these steps:
-1.  **Load**: Reads raw data from CSV (or MongoDB).
+
+```mermaid
+flowchart LR
+    A[(MongoDB<br/>raw_articles)] --> B[Cleaner]
+    B --> C[Normalizer]
+    C --> D[NLP Processor]
+    D --> E[(MongoDB<br/>processed_articles)]
+    
+    style A fill:#2d5a27,stroke:#4CAF50,color:#fff
+    style E fill:#2d5a27,stroke:#4CAF50,color:#fff
+    style B fill:#1a1a2e,stroke:#9b9b4e,color:#fff
+    style C fill:#1a1a2e,stroke:#9b9b4e,color:#fff
+    style D fill:#1a1a2e,stroke:#9b9b4e,color:#fff
+```
+
+1.  **Load**: Reads raw data from MongoDB (`raw_articles` collection).
 2.  **Process**: Applies Cleaner -> Normalizer -> NLP Processor to each record.
-3.  **Save**: Exports the processed data to `processed_news.csv` (or database).
+3.  **Save**: Exports the processed data to MongoDB (`processed_articles` collection).
 
-## orchestration
-
-An Airflow DAG (`../airflow/dags/preprocessing_dag.py`) is provided to schedule this pipeline to run daily.
 
 ## How to Run
 
