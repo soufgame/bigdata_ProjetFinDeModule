@@ -1,0 +1,5 @@
+# Social Network Analysis Requirements
+networkx>=3.2
+pandas>=2.0.0
+pymongo>=4.6.0
+python-louvain>=0.16
